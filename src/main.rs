@@ -1,10 +1,10 @@
-use std::error::Error;
 use std::fs::{File, create_dir_all, rename};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
 use std::thread;
 use std::time::Instant;
 
+use anyhow::{Context, Result, anyhow, bail};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel, OutputVideoFrame};
 use reqwest::blocking::get;
@@ -35,21 +35,22 @@ const PINK: [u8; 3] = [0xFF, 0xC0, 0xCB];
 // Edit this to change what colors are used and in what order
 const OUTPUT_COLORS: &[[u8; 3]] = &[
     BLACK, WHITE, TEAL, ORANGE, PURPLE,
-    PINK, // RED,
-         // ORANGE,
-         // YELLOW,
-         // GREEN,
-         // CYAN,
-         // BLUE,
-         // INDIGO,
-         // VIOLET
+    PINK,
+    // RED,
+    // ORANGE,
+    // YELLOW,
+    // GREEN,
+    // CYAN,
+    // BLUE,
+    // INDIGO,
+    // VIOLET
 ];
 
 // After this number of frames the pixel goes back to its original (B or W) color,
 // set to None to disable.
 const HEAL_AFTER_FRAMES: Option<u32> = Some(50);
 
-fn ensure_dir_for_file(path_str: &str) -> Result<(), Box<dyn Error>> {
+fn ensure_dir_for_file(path_str: &str) -> Result<()> {
     let path = Path::new(path_str);
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -58,7 +59,7 @@ fn ensure_dir_for_file(path_str: &str) -> Result<(), Box<dyn Error>> {
     return Ok(());
 }
 
-fn ensure_bad_apple_video_file(path_str: &str) -> Result<(), Box<dyn Error>> {
+fn ensure_bad_apple_video_file(path_str: &str) -> Result<()> {
     let path = Path::new(path_str);
 
     if path.try_exists()? {
@@ -79,7 +80,7 @@ fn ensure_bad_apple_video_file(path_str: &str) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    Err("failed to download file".into())
+    bail!("failed to download file");
 }
 
 #[derive(Clone)]
@@ -99,7 +100,7 @@ fn process_frames<T: Iterator<Item = OutputVideoFrame>, S: Write>(
     output: &mut S,
     width: u32,
     height: u32,
-) -> Result<(), io::Error> {
+) -> Result<()> {
     let mut output_buffer = Vec::with_capacity((width * height * 3) as usize); // u8 to u24 pixels
     let (heal_frames, can_heal) = match HEAL_AFTER_FRAMES {
         Some(h) => (h, true),
@@ -125,22 +126,25 @@ fn process_frames<T: Iterator<Item = OutputVideoFrame>, S: Write>(
     Ok(())
 }
 
-fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Error>> {
+fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
     // create video decoder (input)
     let mut ffmpeg_decoder = FfmpegCommand::new()
         .input(in_path_str)
         .format("rawvideo")
         .pix_fmt("gray")
         .pipe_stdout()
-        .spawn()?;
+        .spawn()
+        .context("failed to spawn ffmpeg decoder")?;
 
     // extract metadata
     let mut events_iter = ffmpeg_decoder.iter()?;
     let metadata = events_iter.collect_metadata()?;
     let frames_iter = events_iter.filter_frames();
-    let Some(stream_data) = metadata.output_streams.iter().find_map(|s| s.video_data()) else {
-        return Err("no video data in input video metadata".into());
-    };
+    let stream_data = metadata
+        .output_streams
+        .iter()
+        .find_map(|s| s.video_data())
+        .context("no video data in input video metadata")?;
 
     let (width, height) = (stream_data.width, stream_data.height);
     let fps = stream_data.fps;
@@ -156,12 +160,15 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
 
     // create video encoder (output)
     let mut ffmpeg_encoder = FfmpegCommand::new()
+        // video input (frames from stdin)
         .format("rawvideo")
         .pix_fmt("rgb24")
         .size(width, height)
         .rate(fps)
-        .input("-") // video (frames from stdin)
-        .input(in_path_str) // audio
+        .input("-")
+        // audio input
+        .input(in_path_str)
+        // output
         .codec_audio("copy")
         .codec_video("libx264")
         .pix_fmt("yuv420p")
@@ -169,11 +176,12 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
         .map("1:a")
         .overwrite()
         .output(out_path_str)
-        .spawn()?;
+        .spawn()
+        .context("failed to spawn ffmpeg encoder")?;
 
-    let Some(mut encoder_stdin) = ffmpeg_encoder.take_stdin() else {
-        return Err("failed to take output stdin".into());
-    };
+    let mut encoder_stdin = ffmpeg_encoder
+        .take_stdin()
+        .context("failed to take output stdin")?;
     let encoder_logs_iter = ffmpeg_encoder.iter()?;
 
     let output_worker = thread::spawn(move || {
@@ -212,46 +220,34 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
     let input_status = ffmpeg_decoder.wait();
 
     // handle errors
-    let problems = output_worker_res.map_err(|_| "output logs thread error")?;
+    let problems = output_worker_res.map_err(|_| anyhow!("output logs thread error"))?;
     let output_status = output_status?;
     if !output_status.success() {
-        return Err(format!(
-            "Output thread exited with status {}, logged errors:\n{}",
+        bail!(
+            "output thread exited with status {}, logged errors:\n{}",
             output_status,
             problems.join("\n")
-        )
-        .into());
+        );
     }
     let input_status = input_status?;
     if !input_status.success() {
-        return Err(format!("Input thread exited with status {input_status}").into());
+        bail!("input thread exited with status {input_status}");
     }
     processing_res?;
 
     Ok(())
 }
 
-fn main() {
+fn main() -> Result<()> {
     let start_time = Instant::now();
-    if let Err(e) = ensure_dir_for_file(INPUT_VIDEO) {
-        eprintln!("Failed to ensure input dir: {e}");
-        return;
-    }
-    if let Err(e) = ensure_dir_for_file(OUTPUT_VIDEO) {
-        eprintln!("Failed to ensure output dir: {e}");
-        return;
-    }
-    if let Err(e) = ensure_bad_apple_video_file(INPUT_VIDEO) {
-        eprintln!("Failed to ensure Bad Apple video file: {e}");
-        return;
-    }
-    if let Err(e) = process_video(INPUT_VIDEO, OUTPUT_VIDEO) {
-        eprintln!("Failed to process video: {e}");
-        return;
-    }
+
+    ensure_dir_for_file(INPUT_VIDEO).context("failed to ensure input dir")?;
+    ensure_dir_for_file(OUTPUT_VIDEO).context("failed to ensure output dir")?;
+    ensure_bad_apple_video_file(INPUT_VIDEO).context("failed to ensure Bad Apple video file")?;
+    process_video(INPUT_VIDEO, OUTPUT_VIDEO).context("failed to process video")?;
+
     let delta = start_time.elapsed();
-    println!(
-        "Video processed successfully in {:?}: {}",
-        delta, OUTPUT_VIDEO
-    );
+    println!("Video processed successfully in {delta:?}: {OUTPUT_VIDEO}");
+
+    Ok(())
 }
