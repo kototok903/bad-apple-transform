@@ -1,7 +1,7 @@
+use std::error::Error;
 use std::fs::{File, create_dir_all, rename};
 use std::io::{self, Write};
 use std::path::Path;
-use std::error::Error;
 use std::thread;
 use std::time::Instant;
 
@@ -17,12 +17,12 @@ const BAD_APPLE_VIDEO_URLS: &[&str] = &[
     "https://web.archive.org/web/20260826212812/https://badapple.mov/badapple.mov",
 ];
 
-const BLACK:  [u8; 3] = [0x00, 0x00, 0x00];
-const WHITE:  [u8; 3] = [0xFF, 0xFF, 0xFF];
-const TEAL:   [u8; 3] = [0x06, 0x94, 0x94];
+const BLACK: [u8; 3] = [0x00, 0x00, 0x00];
+const WHITE: [u8; 3] = [0xFF, 0xFF, 0xFF];
+const TEAL: [u8; 3] = [0x06, 0x94, 0x94];
 const ORANGE: [u8; 3] = [0xFC, 0x6A, 0x03];
 const PURPLE: [u8; 3] = [0x66, 0x34, 0xB8];
-const PINK:   [u8; 3] = [0xFF, 0xC0, 0xCB];
+const PINK: [u8; 3] = [0xFF, 0xC0, 0xCB];
 // const RED:    [u8; 3] = [0xFF, 0x00, 0x00];
 // const ORANGE: [u8; 3] = [0xFF, 0x7F, 0x00];
 // const YELLOW: [u8; 3] = [0xFF, 0xFF, 0x00];
@@ -34,20 +34,15 @@ const PINK:   [u8; 3] = [0xFF, 0xC0, 0xCB];
 
 // Edit this to change what colors are used and in what order
 const OUTPUT_COLORS: &[[u8; 3]] = &[
-    BLACK,
-    WHITE,
-    TEAL,
-    ORANGE,
-    PURPLE,
-    PINK
-    // RED, 
-    // ORANGE,
-    // YELLOW,
-    // GREEN,
-    // CYAN,
-    // BLUE,
-    // INDIGO,
-    // VIOLET
+    BLACK, WHITE, TEAL, ORANGE, PURPLE,
+    PINK, // RED,
+         // ORANGE,
+         // YELLOW,
+         // GREEN,
+         // CYAN,
+         // BLUE,
+         // INDIGO,
+         // VIOLET
 ];
 
 // After this number of frames the pixel goes back to its original (B or W) color,
@@ -74,7 +69,9 @@ fn ensure_bad_apple_video_file(path_str: &str) -> Result<(), Box<dyn Error>> {
     let temp_path = Path::new(&temp_path_str);
     for url in BAD_APPLE_VIDEO_URLS {
         let Ok(response) = get(*url) else { continue };
-        let Ok(mut response) = response.error_for_status() else { continue };
+        let Ok(mut response) = response.error_for_status() else {
+            continue;
+        };
 
         let mut file = File::create(temp_path)?;
         response.copy_to(&mut file)?;
@@ -93,14 +90,15 @@ struct PixelState {
 }
 
 fn is_black(val: u8) -> bool {
-    return val < 128
+    return val < 128;
 }
 
 fn process_frames<T: Iterator<Item = OutputVideoFrame>, S: Write>(
-    frames_iter: T, 
-    pixel_info: &mut Vec<PixelState>, 
+    frames_iter: T,
+    pixel_info: &mut Vec<PixelState>,
     output: &mut S,
-    width: u32, height: u32
+    width: u32,
+    height: u32,
 ) -> Result<(), io::Error> {
     let mut output_buffer = Vec::with_capacity((width * height * 3) as usize); // u8 to u24 pixels
     let (heal_frames, can_heal) = match HEAL_AFTER_FRAMES {
@@ -147,7 +145,14 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
     let (width, height) = (stream_data.width, stream_data.height);
     let fps = stream_data.fps;
     let duration_sec = metadata.duration().unwrap_or(0f64) as i32;
-    let mut pixel_info = vec![PixelState { is_black: true, color_idx: 0, last_updated: 0 }; (width * height) as usize];
+    let mut pixel_info = vec![
+        PixelState {
+            is_black: true,
+            color_idx: 0,
+            last_updated: 0
+        };
+        (width * height) as usize
+    ];
 
     // create video encoder (output)
     let mut ffmpeg_encoder = FfmpegCommand::new()
@@ -159,7 +164,7 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
         .input(in_path_str) // audio
         .codec_audio("copy")
         .codec_video("libx264")
-        .pix_fmt("yuv420p") 
+        .pix_fmt("yuv420p")
         .map("0:v")
         .map("1:a")
         .overwrite()
@@ -177,15 +182,28 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
             match e {
                 FfmpegEvent::Log(LogLevel::Error | LogLevel::Fatal, e) => {
                     problems.push(e);
-                },
-                FfmpegEvent::Progress(p) => println!("Progress: F{}\t{} / {:02}:{:02}:{:02}", p.frame, p.time, duration_sec / 3600, duration_sec / 60 % 60, duration_sec % 60),
+                }
+                FfmpegEvent::Progress(p) => println!(
+                    "Progress: F{}\t{} / {:02}:{:02}:{:02}",
+                    p.frame,
+                    p.time,
+                    duration_sec / 3600,
+                    duration_sec / 60 % 60,
+                    duration_sec % 60
+                ),
                 _ => {}
             }
-        } 
+        }
         problems
     });
 
-    let processing_res = process_frames(frames_iter, &mut pixel_info, &mut encoder_stdin, width, height);
+    let processing_res = process_frames(
+        frames_iter,
+        &mut pixel_info,
+        &mut encoder_stdin,
+        width,
+        height,
+    );
 
     // release all resources
     drop(encoder_stdin);
@@ -197,11 +215,16 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<(), Box<dyn Er
     let problems = output_worker_res.map_err(|_| "output logs thread error")?;
     let output_status = output_status?;
     if !output_status.success() {
-        return Err(format!("Output thread exited with status {}, logged errors:\n{}", output_status, problems.join("\n")).into())
+        return Err(format!(
+            "Output thread exited with status {}, logged errors:\n{}",
+            output_status,
+            problems.join("\n")
+        )
+        .into());
     }
     let input_status = input_status?;
     if !input_status.success() {
-        return Err(format!("Input thread exited with status {input_status}").into())
+        return Err(format!("Input thread exited with status {input_status}").into());
     }
     processing_res?;
 
@@ -227,5 +250,8 @@ fn main() {
         return;
     }
     let delta = start_time.elapsed();
-    println!("Video processed successfully in {:?}: {}", delta, OUTPUT_VIDEO);
+    println!(
+        "Video processed successfully in {:?}: {}",
+        delta, OUTPUT_VIDEO
+    );
 }
