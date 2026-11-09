@@ -7,3 +7,4 @@ The Bad Apple is purely black and white. This means, each frame can be represent
 ## References
 
 - https://github.com/nathanbabcock/ffmpeg-sidecar
+- https://github.com/BloodyFish/bad-apple-manipulator
