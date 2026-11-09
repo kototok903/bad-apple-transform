@@ -1,3 +1,5 @@
+mod utils;
+
 use std::fs::{File, create_dir_all, rename};
 use std::io::Write;
 use std::path::Path;
@@ -9,6 +11,8 @@ use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel, OutputVideoFrame};
 use reqwest::blocking::get;
 
+use utils::*;
+
 const INPUT_VIDEO: &str = "input/badapple.mov";
 const OUTPUT_VIDEO: &str = "output/badapple.mp4";
 
@@ -17,51 +21,12 @@ const BAD_APPLE_VIDEO_URLS: &[&str] = &[
     "https://web.archive.org/web/20260826212812/https://badapple.mov/badapple.mov",
 ];
 
-#[derive(Clone, Copy)]
-struct Color([u8; 3]);
-
-impl Color {
-    const fn from_hex(hex: u32) -> Self {
-        Self([
-            ((hex >> 16) & 0xFF) as u8,
-            ((hex >> 8) & 0xFF) as u8,
-            (hex & 0xFF) as u8,
-        ])
-    }
-
-    fn bytes(&self) -> [u8; 3] {
-        self.0
-    }
-}
-
-const BLACK: Color = Color::from_hex(0x000000);
-const WHITE: Color = Color::from_hex(0xFFFFFF);
-const TEAL: Color = Color::from_hex(0x069494);
-const ORANGE: Color = Color::from_hex(0xFC6A03);
-const PURPLE: Color = Color::from_hex(0x6634B8);
-const PINK: Color = Color::from_hex(0xFFC0CB);
-// const RED:    Color = [0xFF, 0x00, 0x00];
-// const ORANGE: Color = [0xFF, 0x7F, 0x00];
-// const YELLOW: Color = [0xFF, 0xFF, 0x00];
-// const GREEN:  Color = [0x00, 0xFF, 0x00];
-// const CYAN:   Color = [0x00, 0xFF, 0xFF];
-// const BLUE:   Color = [0x00, 0x00, 0xFF];
-// const INDIGO: Color = [0x4B, 0x00, 0x82];
-// const VIOLET: Color = [0x94, 0x00, 0xD3];
-
 // Edit this to change what colors are used and in what order.
 // Example: &[BLACK, WHITE] would give you the original video.
 const OUTPUT_COLORS: &[Color] = &[
     BLACK, WHITE, TEAL, ORANGE, PURPLE,
     PINK,
-    // RED,
-    // ORANGE,
-    // YELLOW,
-    // GREEN,
-    // CYAN,
-    // BLUE,
-    // INDIGO,
-    // VIOLET
+    // RED, ORANGE2, YELLOW, GREEN, CYAN, BLUE, INDIGO, VIOLET,
 ];
 
 // After this number of frames the pixel goes back to its original (B or W) color.
