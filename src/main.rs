@@ -17,23 +17,41 @@ const BAD_APPLE_VIDEO_URLS: &[&str] = &[
     "https://web.archive.org/web/20260826212812/https://badapple.mov/badapple.mov",
 ];
 
-const BLACK: [u8; 3] = [0x00, 0x00, 0x00];
-const WHITE: [u8; 3] = [0xFF, 0xFF, 0xFF];
-const TEAL: [u8; 3] = [0x06, 0x94, 0x94];
-const ORANGE: [u8; 3] = [0xFC, 0x6A, 0x03];
-const PURPLE: [u8; 3] = [0x66, 0x34, 0xB8];
-const PINK: [u8; 3] = [0xFF, 0xC0, 0xCB];
-// const RED:    [u8; 3] = [0xFF, 0x00, 0x00];
-// const ORANGE: [u8; 3] = [0xFF, 0x7F, 0x00];
-// const YELLOW: [u8; 3] = [0xFF, 0xFF, 0x00];
-// const GREEN:  [u8; 3] = [0x00, 0xFF, 0x00];
-// const CYAN:   [u8; 3] = [0x00, 0xFF, 0xFF];
-// const BLUE:   [u8; 3] = [0x00, 0x00, 0xFF];
-// const INDIGO: [u8; 3] = [0x4B, 0x00, 0x82];
-// const VIOLET: [u8; 3] = [0x94, 0x00, 0xD3];
+#[derive(Clone, Copy)]
+struct Color([u8; 3]);
 
-// Edit this to change what colors are used and in what order
-const OUTPUT_COLORS: &[[u8; 3]] = &[
+impl Color {
+    const fn from_hex(hex: u32) -> Self {
+        Self([
+            ((hex >> 16) & 0xFF) as u8,
+            ((hex >> 8) & 0xFF) as u8,
+            (hex & 0xFF) as u8,
+        ])
+    }
+
+    fn bytes(&self) -> [u8; 3] {
+        self.0
+    }
+}
+
+const BLACK: Color = Color::from_hex(0x000000);
+const WHITE: Color = Color::from_hex(0xFFFFFF);
+const TEAL: Color = Color::from_hex(0x069494);
+const ORANGE: Color = Color::from_hex(0xFC6A03);
+const PURPLE: Color = Color::from_hex(0x6634B8);
+const PINK: Color = Color::from_hex(0xFFC0CB);
+// const RED:    Color = [0xFF, 0x00, 0x00];
+// const ORANGE: Color = [0xFF, 0x7F, 0x00];
+// const YELLOW: Color = [0xFF, 0xFF, 0x00];
+// const GREEN:  Color = [0x00, 0xFF, 0x00];
+// const CYAN:   Color = [0x00, 0xFF, 0xFF];
+// const BLUE:   Color = [0x00, 0x00, 0xFF];
+// const INDIGO: Color = [0x4B, 0x00, 0x82];
+// const VIOLET: Color = [0x94, 0x00, 0xD3];
+
+// Edit this to change what colors are used and in what order.
+// Example: &[BLACK, WHITE] would give you the original video.
+const OUTPUT_COLORS: &[Color] = &[
     BLACK, WHITE, TEAL, ORANGE, PURPLE,
     PINK,
     // RED,
@@ -46,8 +64,8 @@ const OUTPUT_COLORS: &[[u8; 3]] = &[
     // VIOLET
 ];
 
-// After this number of frames the pixel goes back to its original (B or W) color,
-// set to None to disable.
+// After this number of frames the pixel goes back to its original (B or W) color.
+// Set to None to disable.
 const HEAL_AFTER_FRAMES: Option<u32> = Some(50);
 
 fn ensure_dir_for_file(path_str: &str) -> Result<()> {
@@ -90,35 +108,49 @@ struct PixelState {
     last_updated: u32,
 }
 
-fn is_black(val: u8) -> bool {
-    return val < 128;
+impl PixelState {
+    fn is_black(val: u8) -> bool {
+        // TODO: maybe add different low and high thresholds
+        val < 128
+    }
+
+    fn update(&mut self, new_val: u8, frame_num: u32) {
+        if self.is_black != PixelState::is_black(new_val) {
+            self.is_black = !self.is_black;
+            self.color_idx = (self.color_idx + 1) % OUTPUT_COLORS.len();
+            self.last_updated = frame_num;
+        }
+        if HEAL_AFTER_FRAMES.is_some_and(|hf| frame_num > self.last_updated + hf) {
+            self.color_idx = if self.is_black { 0 } else { 1 }; // assuming BLACK is the first element in OUTPUT_COLORS
+        }
+    }
+
+    fn color(&self) -> Color {
+        OUTPUT_COLORS[self.color_idx]
+    }
 }
 
-fn process_frames<T: Iterator<Item = OutputVideoFrame>, S: Write>(
-    frames_iter: T,
-    pixel_info: &mut Vec<PixelState>,
-    output: &mut S,
+fn process_frames(
+    frames_iter: impl Iterator<Item = OutputVideoFrame>,
+    output: &mut impl Write,
     width: u32,
     height: u32,
 ) -> Result<()> {
+    let mut pixel_states = vec![
+        PixelState {
+            is_black: true,
+            color_idx: 0,
+            last_updated: 0
+        };
+        (width * height) as usize
+    ];
     let mut output_buffer = Vec::with_capacity((width * height * 3) as usize); // u8 to u24 pixels
-    let (heal_frames, can_heal) = match HEAL_AFTER_FRAMES {
-        Some(h) => (h, true),
-        None => (0, false),
-    };
 
     for frame in frames_iter {
         output_buffer.clear();
-        for (info, val) in pixel_info.iter_mut().zip(frame.data) {
-            if info.is_black != is_black(val) {
-                info.is_black = !info.is_black;
-                info.color_idx = (info.color_idx + 1) % OUTPUT_COLORS.len();
-                info.last_updated = frame.frame_num;
-            }
-            if can_heal && frame.frame_num > info.last_updated + heal_frames {
-                info.color_idx = if info.is_black { 0 } else { 1 }; // assuming BLACK is the first element in OUTPUT_COLORS
-            }
-            output_buffer.extend(OUTPUT_COLORS[info.color_idx]);
+        for (ps, val) in pixel_states.iter_mut().zip(frame.data) {
+            ps.update(val, frame.frame_num);
+            output_buffer.extend(ps.color().bytes());
         }
         output.write_all(&output_buffer)?;
     }
@@ -149,14 +181,6 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
     let (width, height) = (stream_data.width, stream_data.height);
     let fps = stream_data.fps;
     let duration_sec = metadata.duration().unwrap_or(0f64) as i32;
-    let mut pixel_info = vec![
-        PixelState {
-            is_black: true,
-            color_idx: 0,
-            last_updated: 0
-        };
-        (width * height) as usize
-    ];
 
     // create video encoder (output)
     let mut ffmpeg_encoder = FfmpegCommand::new()
@@ -205,13 +229,7 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
         problems
     });
 
-    let processing_res = process_frames(
-        frames_iter,
-        &mut pixel_info,
-        &mut encoder_stdin,
-        width,
-        height,
-    );
+    let processing_res = process_frames(frames_iter, &mut encoder_stdin, width, height);
 
     // release all resources
     drop(encoder_stdin);
