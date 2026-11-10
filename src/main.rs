@@ -21,6 +21,8 @@ const BAD_APPLE_VIDEO_URLS: &[&str] = &[
     "https://web.archive.org/web/20260826212812/https://badapple.mov/badapple.mov",
 ];
 
+// TODO: turn control consts into a config enum after adding more transforms
+
 // Edit this to change what colors are used and in what order.
 // Example: &[BLACK, WHITE] would give you the original video.
 #[rustfmt::skip]
@@ -28,8 +30,8 @@ const OUTPUT_COLORS: &[Color] = &[
     BLACK, 
     WHITE, 
     TEAL, 
-    ORANGE, 
-    PURPLE,
+    // ORANGE,
+    // PURPLE,
     // PINK,
     // RED,
     // ORANGE2,
@@ -50,8 +52,7 @@ const HEAL_FRAMES: Option<u32> = Some(50);
 // back to their original value, or switch immediatelly.
 const HEAL_BLEND: bool = true;
 
-fn ensure_dir_for_file(path_str: &str) -> Result<()> {
-    let path = Path::new(path_str);
+fn ensure_dir_for_file(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -59,15 +60,12 @@ fn ensure_dir_for_file(path_str: &str) -> Result<()> {
     return Ok(());
 }
 
-fn ensure_bad_apple_video_file(path_str: &str) -> Result<()> {
-    let path = Path::new(path_str);
-
+fn ensure_bad_apple_video_file(path: &Path) -> Result<()> {
     if path.try_exists()? {
         return Ok(());
     }
 
-    let temp_path_str = format!("{path_str}_temp");
-    let temp_path = Path::new(&temp_path_str);
+    let temp_path = path.with_added_extension("tmp");
     let mut problems: Vec<String> = vec![];
     for url in BAD_APPLE_VIDEO_URLS {
         let mut response = match get(*url).and_then(|r| r.error_for_status()) {
@@ -78,9 +76,9 @@ fn ensure_bad_apple_video_file(path_str: &str) -> Result<()> {
             }
         };
 
-        let mut file = File::create(temp_path)?;
+        let mut file = File::create(&temp_path)?;
         response.copy_to(&mut file)?;
-        rename(temp_path, path)?;
+        rename(&temp_path, path)?;
         return Ok(());
     }
 
@@ -155,10 +153,10 @@ fn process_frames(
     Ok(())
 }
 
-fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
+fn process_video(in_path: &Path, out_path: &Path) -> Result<()> {
     // create video decoder (input)
     let mut ffmpeg_decoder = FfmpegCommand::new()
-        .input(in_path_str)
+        .input(in_path)
         .format("rawvideo")
         .pix_fmt("gray")
         .pipe_stdout()
@@ -188,7 +186,7 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
         .rate(fps)
         .input("-")
         // audio input
-        .input(in_path_str)
+        .input(in_path)
         // output
         .codec_audio("copy")
         .codec_video("libx264")
@@ -196,7 +194,7 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
         .map("0:v")
         .map("1:a")
         .overwrite()
-        .output(out_path_str)
+        .output(out_path)
         .spawn()
         .context("failed to spawn ffmpeg encoder")?;
 
@@ -255,15 +253,17 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let input_path = Path::new(INPUT_VIDEO);
+    let output_path = Path::new(OUTPUT_VIDEO);
     let start_time = Instant::now();
 
-    ensure_dir_for_file(INPUT_VIDEO).context("failed to ensure input dir")?;
-    ensure_dir_for_file(OUTPUT_VIDEO).context("failed to ensure output dir")?;
-    ensure_bad_apple_video_file(INPUT_VIDEO).context("failed to ensure Bad Apple video file")?;
-    process_video(INPUT_VIDEO, OUTPUT_VIDEO).context("failed to process video")?;
+    ensure_dir_for_file(input_path).context("failed to ensure input dir")?;
+    ensure_dir_for_file(output_path).context("failed to ensure output dir")?;
+    ensure_bad_apple_video_file(input_path).context("failed to ensure Bad Apple video file")?;
+    process_video(input_path, output_path).context("failed to process video")?;
 
     let delta = start_time.elapsed();
-    println!("Video processed successfully in {delta:?}: {OUTPUT_VIDEO}");
+    println!("Video processed successfully in {delta:?}: {output_path:?}");
 
     Ok(())
 }

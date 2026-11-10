@@ -7,7 +7,7 @@ Bad Apple animation is purely black and white. This means, each frame can be rep
 ## Usage
 
 1. Make sure you have [FFmpeg](https://www.ffmpeg.org/) CLI installed.
-2. Run `cargo run`
+2. Run `cargo run --release`
    1. The input video will get downloaded automatically
    2. The output video will appear in `output/` on success
 3. Edit `OUTPUT_COLORS`, `HEAL_FRAMES`, and `HEAL_BLEND` values in main.rs to get different results
@@ -17,3 +17,4 @@ Bad Apple animation is purely black and white. This means, each frame can be rep
 - https://github.com/nathanbabcock/ffmpeg-sidecar
   - https://github.com/nathanbabcock/ffmpeg-sidecar/blob/main/examples/h265_transcode.rs
 - https://github.com/BloodyFish/bad-apple-manipulator
+- https://docs.rs/anyhow/latest/anyhow/
