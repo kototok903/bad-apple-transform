@@ -15,6 +15,13 @@ impl Color {
     pub fn bytes(&self) -> [u8; 3] {
         self.0
     }
+
+    pub fn blend(c1: Self, c2: Self, c2f: f64) -> Self {
+        let c2f = c2f.clamp(0.0, 1.0);
+        let blend_channel =
+            |v1: u8, v2: u8| ((v1 as f64) + ((v2 as f64) - (v1 as f64)) * c2f).round() as u8;
+        Self(std::array::from_fn(|i| blend_channel(c1.0[i], c2.0[i])))
+    }
 }
 
 pub const BLACK: Color = Color::from_hex(0x000000);

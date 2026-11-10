@@ -6,7 +6,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel, OutputVideoFrame};
 use reqwest::blocking::get;
@@ -23,15 +23,32 @@ const BAD_APPLE_VIDEO_URLS: &[&str] = &[
 
 // Edit this to change what colors are used and in what order.
 // Example: &[BLACK, WHITE] would give you the original video.
+#[rustfmt::skip]
 const OUTPUT_COLORS: &[Color] = &[
-    BLACK, WHITE, TEAL, ORANGE, PURPLE,
-    PINK,
-    // RED, ORANGE2, YELLOW, GREEN, CYAN, BLUE, INDIGO, VIOLET,
+    BLACK, 
+    WHITE, 
+    TEAL, 
+    ORANGE, 
+    PURPLE,
+    // PINK,
+    // RED,
+    // ORANGE2,
+    // YELLOW,
+    // GREEN,
+    // CYAN,
+    // BLUE,
+    // INDIGO,
+    // VIOLET,
 ];
+const _: () = assert!(OUTPUT_COLORS.len() >= 2);
 
 // After this number of frames the pixel goes back to its original (B or W) color.
 // Set to None to disable.
-const HEAL_AFTER_FRAMES: Option<u32> = Some(50);
+const HEAL_FRAMES: Option<u32> = Some(50);
+
+// When HEAL_FRAMES is not None, this value decides whether pixels would slowly fade
+// back to their original value, or switch immediatelly.
+const HEAL_BLEND: bool = true;
 
 fn ensure_dir_for_file(path_str: &str) -> Result<()> {
     let path = Path::new(path_str);
@@ -49,12 +66,16 @@ fn ensure_bad_apple_video_file(path_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let temp_path_str = format!("{}_temp", path_str);
+    let temp_path_str = format!("{path_str}_temp");
     let temp_path = Path::new(&temp_path_str);
+    let mut problems: Vec<String> = vec![];
     for url in BAD_APPLE_VIDEO_URLS {
-        let Ok(response) = get(*url) else { continue };
-        let Ok(mut response) = response.error_for_status() else {
-            continue;
+        let mut response = match get(*url).and_then(|r| r.error_for_status()) {
+            Ok(r) => r,
+            Err(e) => {
+                problems.push(e.to_string());
+                continue;
+            }
         };
 
         let mut file = File::create(temp_path)?;
@@ -63,7 +84,10 @@ fn ensure_bad_apple_video_file(path_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    bail!("failed to download file");
+    if !problems.is_empty() {
+        bail!("failed to download file:\n{}", problems.join("\n"));
+    }
+    bail!("failed to download file: no download URLs configured");
 }
 
 #[derive(Clone)]
@@ -79,19 +103,27 @@ impl PixelState {
         val < 128
     }
 
-    fn update(&mut self, new_val: u8, frame_num: u32) {
-        if self.is_black != PixelState::is_black(new_val) {
+    fn update(&mut self, new_val: u8, frame_num: u32) -> Color {
+        if self.is_black != Self::is_black(new_val) {
             self.is_black = !self.is_black;
             self.color_idx = (self.color_idx + 1) % OUTPUT_COLORS.len();
             self.last_updated = frame_num;
         }
-        if HEAL_AFTER_FRAMES.is_some_and(|hf| frame_num > self.last_updated + hf) {
-            self.color_idx = if self.is_black { 0 } else { 1 }; // assuming BLACK is the first element in OUTPUT_COLORS
+        let mut color = OUTPUT_COLORS[self.color_idx];
+        if let Some(hf) = HEAL_FRAMES {
+            let og_color_idx = if self.is_black { 0 } else { 1 }; // assuming BLACK is the first element in OUTPUT_COLORS
+            if frame_num > self.last_updated + hf {
+                self.color_idx = og_color_idx;
+                color = OUTPUT_COLORS[self.color_idx];
+            } else if HEAL_BLEND {
+                color = Color::blend(
+                    OUTPUT_COLORS[self.color_idx],
+                    OUTPUT_COLORS[og_color_idx],
+                    (frame_num - self.last_updated) as f64 / hf as f64,
+                )
+            }
         }
-    }
-
-    fn color(&self) -> Color {
-        OUTPUT_COLORS[self.color_idx]
+        color
     }
 }
 
@@ -114,8 +146,8 @@ fn process_frames(
     for frame in frames_iter {
         output_buffer.clear();
         for (ps, val) in pixel_states.iter_mut().zip(frame.data) {
-            ps.update(val, frame.frame_num);
-            output_buffer.extend(ps.color().bytes());
+            let color = ps.update(val, frame.frame_num);
+            output_buffer.extend(color.bytes());
         }
         output.write_all(&output_buffer)?;
     }
@@ -145,7 +177,7 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
 
     let (width, height) = (stream_data.width, stream_data.height);
     let fps = stream_data.fps;
-    let duration_sec = metadata.duration().unwrap_or(0f64) as i32;
+    let duration_sec = metadata.duration().unwrap_or(0.0) as i32;
 
     // create video encoder (output)
     let mut ffmpeg_encoder = FfmpegCommand::new()
@@ -173,7 +205,8 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
         .context("failed to take output stdin")?;
     let encoder_logs_iter = ffmpeg_encoder.iter()?;
 
-    let output_worker = thread::spawn(move || {
+    // process encoder logs and print progress info
+    let encoder_logs_worker = thread::spawn(move || {
         let mut problems = Vec::new();
         for e in encoder_logs_iter {
             match e {
@@ -198,24 +231,24 @@ fn process_video(in_path_str: &str, out_path_str: &str) -> Result<()> {
 
     // release all resources
     drop(encoder_stdin);
-    let output_worker_res = output_worker.join();
-    let output_status = ffmpeg_encoder.wait();
-    let input_status = ffmpeg_decoder.wait();
+    let encoder_logs_worker_res = encoder_logs_worker.join();
+    let encoder_status = ffmpeg_encoder.wait();
+    let decoder_status = ffmpeg_decoder.wait();
 
     // handle errors
-    let problems = output_worker_res.map_err(|_| anyhow!("output logs thread error"))?;
-    let output_status = output_status?;
-    if !output_status.success() {
-        bail!(
-            "output thread exited with status {}, logged errors:\n{}",
-            output_status,
-            problems.join("\n")
-        );
-    }
-    let input_status = input_status?;
-    if !input_status.success() {
-        bail!("input thread exited with status {input_status}");
-    }
+    let problems = encoder_logs_worker_res.map_err(|_| anyhow!("output logs thread error"))?;
+    let encoder_status = encoder_status?;
+    ensure!(
+        encoder_status.success(),
+        "output thread exited with status {}, logged errors:\n{}",
+        encoder_status,
+        problems.join("\n")
+    );
+    let decoder_status = decoder_status?;
+    ensure!(
+        decoder_status.success(),
+        "input thread exited with status {decoder_status}"
+    );
     processing_res?;
 
     Ok(())

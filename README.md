@@ -10,7 +10,7 @@ Bad Apple animation is purely black and white. This means, each frame can be rep
 2. Run `cargo run`
    1. The input video will get downloaded automatically
    2. The output video will appear in `output/` on success
-3. Edit `OUTPUT_COLORS` and `HEAL_AFTER_FRAMES` values in main.rs to get different results
+3. Edit `OUTPUT_COLORS`, `HEAL_FRAMES`, and `HEAL_BLEND` values in main.rs to get different results
 
 ## References
 
